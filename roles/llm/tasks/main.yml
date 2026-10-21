@@ -1,0 +1,59 @@
+---
+- name: Validate platform and configuration
+  ansible.builtin.import_tasks: preflight.yml
+
+- name: Install and verify the host driver
+  ansible.builtin.import_tasks: driver.yml
+
+- name: Install Docker Engine
+  ansible.builtin.import_tasks: docker.yml
+
+- name: Configure NVIDIA Container Toolkit
+  ansible.builtin.import_tasks: toolkit.yml
+
+- name: Install health and boot-warmup services before starting GPU containers
+  ansible.builtin.import_tasks: operations.yml
+
+- name: Deploy Ollama and download the selected model
+  ansible.builtin.import_tasks: ollama.yml
+
+- name: Verify end-to-end inference on the GPU
+  ansible.builtin.import_tasks: verify.yml
+
+- name: Enable model warmup on subsequent boots
+  ansible.builtin.systemd_service:
+    name: gpu-llm-warmup.service
+    enabled: "{{ llm_warm_on_boot | bool }}"
+
+- name: Enable periodic health checks
+  ansible.builtin.systemd_service:
+    name: gpu-llm-health.timer
+    enabled: true
+    state: started
+
+- name: Read installed infrastructure versions for the deployment manifest
+  ansible.builtin.command:
+    argv:
+      - dpkg-query
+      - --show
+      - '--showformat=${binary:Package}=${Version}\n'
+      - docker-ce
+      - docker-ce-cli
+      - containerd.io
+      - docker-compose-plugin
+      - nvidia-container-toolkit
+  changed_when: false
+  register: llm_package_versions
+
+- name: Save a stable manifest of the verified deployment
+  ansible.builtin.copy:
+    dest: "{{ llm_state_dir }}/deployment.json"
+    owner: root
+    group: root
+    mode: "0644"
+    content: >-
+      {{ {'image': llm_image, 'model': llm_model,
+          'model_digest': (llm_api_check.stdout | from_json).model_digest,
+          'ollama_version': (llm_api_check.stdout | from_json).ollama_version,
+          'driver_versions': llm_driver_after.stdout_lines,
+          'packages': llm_package_versions.stdout_lines} | to_nice_json }}

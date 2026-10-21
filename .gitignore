@@ -1,0 +1,41 @@
+# Controller environments and generated files
+.venv/
+.ansible/
+.cache/
+.local/
+__pycache__/
+*.py[cod]
+*.retry
+.pytest_cache/
+.coverage
+htmlcov/
+.DS_Store
+
+# Only the documented inventory examples belong in Git
+/inventory/*
+!/inventory/hosts.example.yml
+!/inventory/group_vars/
+/inventory/group_vars/*
+!/inventory/group_vars/gpu_servers.yml
+
+# Credentials and local settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ed25519*
+known_hosts*
+settings.local.yml
+
+# Server evidence, logs, archives and scratch work stay local
+/evidence/
+/reports/
+/work/
+/outputs/
+*.log
+*.zip
+*.tar.gz

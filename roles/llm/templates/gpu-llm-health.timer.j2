@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the GPU LLM health probe periodically
+
+[Timer]
+OnBootSec=180
+OnUnitInactiveSec={{ llm_health_interval_seconds }}
+RandomizedDelaySec=10
+AccuracySec=5
+Unit=gpu-llm-health.service
+
+[Install]
+WantedBy=timers.target

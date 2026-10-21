@@ -1,0 +1,17 @@
+---
+- name: Test automatic recovery after reboot on an explicitly selected test server
+  hosts: gpu_servers
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - name: Require the explicit reboot-test switch
+      ansible.builtin.assert:
+        that: llm_accept_reboot_test | default(false) | bool
+        fail_msg: Use llmctl accept --reboot-test or explicitly set llm_accept_reboot_test=true for a test host.
+
+    - name: Reboot and verify automatic service recovery
+      ansible.builtin.include_role:
+        name: llm
+        tasks_from: reboot_test

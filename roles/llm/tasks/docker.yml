@@ -1,0 +1,59 @@
+---
+- name: Create the APT keyring directory
+  ansible.builtin.file:
+    path: /etc/apt/keyrings
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Download Docker repository signing key
+  ansible.builtin.get_url:
+    url: https://download.docker.com/linux/ubuntu/gpg
+    dest: /etc/apt/keyrings/docker.asc
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: 60
+
+- name: Configure Docker official signed repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/docker.sources
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      Types: deb
+      URIs: https://download.docker.com/linux/ubuntu
+      Suites: {{ ansible_facts['distribution_release'] }}
+      Components: stable
+      Architectures: amd64
+      Signed-By: /etc/apt/keyrings/docker.asc
+  register: llm_docker_repo
+
+- name: Install Docker Engine and Compose plugin
+  ansible.builtin.apt:
+    name: "{{ llm_docker_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: "{{ 0 if llm_docker_repo is changed else 3600 }}"
+    lock_timeout: 120
+
+- name: Enable Docker on boot and start it
+  ansible.builtin.systemd_service:
+    name: docker
+    enabled: true
+    state: started
+
+- name: Read the Docker Engine server version
+  ansible.builtin.command:
+    argv: [docker, version, --format, '{{ "{{.Server.Version}}" }}']
+  register: llm_docker_version
+  changed_when: false
+
+- name: Require Docker with fixed localhost port publishing isolation
+  ansible.builtin.assert:
+    that: llm_docker_version.stdout | trim is version('28.0.0', '>=')
+    fail_msg: >-
+      Docker Engine 28+ is required for localhost published-port isolation.
+      Schedule an upgrade of an existing older Docker installation before proceeding.

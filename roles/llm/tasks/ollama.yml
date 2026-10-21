@@ -1,0 +1,68 @@
+---
+- name: Create application and persistent model directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - {path: "{{ llm_install_dir }}", mode: "0755"}
+    - {path: "{{ llm_data_dir }}", mode: "0700"}
+
+- name: Install Compose configuration
+  ansible.builtin.template:
+    src: compose.yml.j2
+    dest: "{{ llm_install_dir }}/compose.yml"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Validate the rendered Compose configuration
+  ansible.builtin.command:
+    argv: [docker, compose, --project-directory, "{{ llm_install_dir }}", config, --quiet]
+  changed_when: false
+
+- name: Start Ollama and wait for its container healthcheck
+  community.docker.docker_compose_v2:
+    project_src: "{{ llm_install_dir }}"
+    project_name: "{{ llm_project_name }}"
+    state: present
+    pull: missing
+    recreate: "{{ 'always' if llm_recreate_container | bool else 'auto' }}"
+    remove_orphans: false
+    wait: true
+    wait_timeout: 240
+
+- name: Wait for the model catalogue API
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_port }}/api/tags"
+    return_content: true
+    use_proxy: false
+    timeout: 10
+    status_code: 200
+  register: llm_catalogue
+  retries: 12
+  delay: 5
+  until: llm_catalogue.status | default(0) == 200
+
+- name: Download the model only if missing or explicitly requested
+  ansible.builtin.command:
+    argv:
+      - docker
+      - compose
+      - --project-directory
+      - "{{ llm_install_dir }}"
+      - exec
+      - -T
+      - -e
+      - OLLAMA_HOST=127.0.0.1:11434
+      - ollama
+      - ollama
+      - pull
+      - "{{ llm_model }}"
+  async: "{{ llm_model_pull_timeout }}"
+  poll: 15
+  changed_when: true
+  when: >-
+    llm_model_update | bool or llm_model not in (llm_catalogue.json.models | map(attribute='name') | list)

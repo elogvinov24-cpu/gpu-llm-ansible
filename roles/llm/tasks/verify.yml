@@ -1,0 +1,41 @@
+---
+- name: Verify NVIDIA on the host
+  ansible.builtin.command:
+    argv: [nvidia-smi, -L]
+  register: llm_host_gpu_check
+  changed_when: false
+  failed_when: llm_host_gpu_check.rc != 0 or 'GPU' not in llm_host_gpu_check.stdout
+
+- name: Verify NVIDIA inside the actual Ollama container
+  ansible.builtin.command:
+    argv: [docker, compose, --project-directory, "{{ llm_install_dir }}", exec, -T, ollama, nvidia-smi, -L]
+  register: llm_container_gpu_check
+  changed_when: false
+  failed_when: llm_container_gpu_check.rc != 0 or 'GPU' not in llm_container_gpu_check.stdout
+
+- name: Verify model identity, real inference and positive GPU memory allocation
+  ansible.builtin.command:
+    argv:
+      - /usr/local/bin/gpu-llm-check
+      - --url
+      - "http://127.0.0.1:{{ llm_port }}"
+      - --model
+      - "{{ llm_model }}"
+      - --context-length
+      - "{{ llm_context_length | string }}"
+      - --timeout
+      - "{{ llm_inference_timeout | string }}"
+      - --expected-digest
+      - "{{ llm_model_expected_digest }}"
+  changed_when: false
+  register: llm_api_check
+
+- name: Report successful GPU inference
+  ansible.builtin.debug:
+    msg: "{{ llm_api_check.stdout | from_json }}"
+
+- name: Verify operational probes and publish a health snapshot
+  ansible.builtin.command:
+    argv: [/usr/local/bin/gpu-llm-health, --config, "{{ llm_install_dir }}/probe.json"]
+  changed_when: false
+  register: llm_health_check

@@ -1,0 +1,30 @@
+---
+- name: Reboot the acceptance test host
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ llm_reboot_timeout }}"
+    post_reboot_delay: 15
+    test_command: whoami
+
+- name: Wait for Ollama to recover without redeployment
+  ansible.builtin.uri:
+    url: "http://127.0.0.1:{{ llm_port }}/api/version"
+    use_proxy: false
+    timeout: 10
+    status_code: 200
+  register: llm_boot_api
+  retries: 48
+  delay: 5
+  until: llm_boot_api.status | default(0) == 200
+
+- name: Verify automatic warmup completed on this boot
+  ansible.builtin.command:
+    argv: [systemctl, show, gpu-llm-warmup.service, --property=SubState, --value]
+  register: llm_boot_warmup
+  changed_when: false
+  retries: 60
+  delay: 10
+  until: llm_boot_warmup.stdout | trim == 'exited'
+  when: llm_warm_on_boot | bool
+
+- name: Check host GPU and real inference after reboot
+  ansible.builtin.import_tasks: verify.yml

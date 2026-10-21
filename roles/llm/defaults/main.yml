@@ -1,0 +1,35 @@
+---
+llm_image: ollama/ollama:0.40.7@sha256:2e6cc92ffa43b4b1a2e70e315407e00ac97ec125afc71277d73c7efe01c4f31b
+llm_model: qwen2.5:7b-instruct-q4_K_M
+llm_model_expected_digest: ""
+llm_model_update: false
+llm_model_pull_timeout: 3600
+llm_inference_timeout: 300
+llm_context_length: 2048
+llm_num_parallel: 1
+llm_max_queue: 32
+llm_keep_alive: 5m
+llm_gpu_device_ids: []  # Empty means all GPUs; UUIDs are preferable to numeric indexes.
+llm_port: 11434
+llm_project_name: gpu-llm
+llm_install_dir: /opt/gpu-llm
+llm_data_dir: /var/lib/ollama
+llm_state_dir: /var/lib/gpu-llm
+llm_nvidia_driver_package: ""
+llm_nvidia_min_driver: "570"
+llm_secure_boot_prepared: false
+llm_allow_reboot: true
+llm_reboot_timeout: 900
+llm_min_memory_mb: 12000
+llm_min_free_disk_gib: 20
+llm_health_interval_seconds: 60
+llm_warm_on_boot: true
+llm_boot_ready_timeout: 240
+# Empty version: install once from the signed repository; do not upgrade on every run.
+llm_container_toolkit_version: ""
+llm_docker_packages:
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-buildx-plugin
+  - docker-compose-plugin

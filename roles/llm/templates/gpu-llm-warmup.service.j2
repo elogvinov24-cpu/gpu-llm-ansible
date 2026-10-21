@@ -1,0 +1,30 @@
+[Unit]
+Description=Warm and verify the GPU LLM after boot
+Wants=network-online.target
+Requires=docker.service
+After=network-online.target docker.service
+ConditionPathExists={{ llm_install_dir }}/compose.yml
+StartLimitIntervalSec={{ [7200, (llm_boot_ready_timeout | int + llm_inference_timeout | int + 150) * 4] | max }}
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gpu-llm-check --config {{ llm_install_dir }}/probe.json --wait-ready {{ llm_boot_ready_timeout }}
+TimeoutStartSec={{ llm_boot_ready_timeout | int + llm_inference_timeout | int + 120 }}
+RemainAfterExit=yes
+Restart=on-failure
+RestartSec=30
+User=nobody
+Group=nogroup
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

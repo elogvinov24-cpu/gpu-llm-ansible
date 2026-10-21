@@ -1,0 +1,78 @@
+---
+- name: Create the application configuration directory
+  ansible.builtin.file:
+    path: "{{ llm_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install operational checks
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - {src: verify_api.py, dest: /usr/local/bin/gpu-llm-check}
+    - {src: health_probe.py, dest: /usr/local/bin/gpu-llm-health}
+
+- name: Install shared probe configuration without secrets
+  ansible.builtin.copy:
+    content: >-
+      {{ {'url': 'http://127.0.0.1:' ~ llm_port, 'model': llm_model,
+          'expected_digest': llm_model_expected_digest, 'context_length': llm_context_length,
+          'timeout': llm_inference_timeout, 'install_dir': llm_install_dir,
+          'state_dir': llm_state_dir} | to_nice_json }}
+    dest: "{{ llm_install_dir }}/probe.json"
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Install health timer and boot warmup units
+  ansible.builtin.template:
+    src: "{{ item }}.j2"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - gpu-llm-warmup.service
+    - gpu-llm-health.service
+    - gpu-llm-health.timer
+  register: llm_systemd_units
+  notify: Reload systemd units
+
+- name: Validate systemd units before loading them
+  ansible.builtin.command:
+    argv:
+      - systemd-analyze
+      - verify
+      - /etc/systemd/system/gpu-llm-warmup.service
+      - /etc/systemd/system/gpu-llm-health.service
+      - /etc/systemd/system/gpu-llm-health.timer
+  changed_when: false
+
+- name: Detect a daemon reload left pending by an interrupted run
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - show
+      - --property=NeedDaemonReload
+      - --value
+      - gpu-llm-warmup.service
+      - gpu-llm-health.service
+      - gpu-llm-health.timer
+  register: llm_pending_unit_reload
+  changed_when: "'yes' in llm_pending_unit_reload.stdout_lines"
+  notify: Reload systemd units
+
+- name: Reload unit files before creating or recreating GPU containers
+  ansible.builtin.meta: flush_handlers
+
+- name: Decide whether GPU containers need recreation after infrastructure changes
+  ansible.builtin.set_fact:
+    llm_recreate_container: >-
+      {{ llm_systemd_units is changed or llm_pending_unit_reload is changed
+         or llm_toolkit_install is changed or llm_runtime_registration is changed }}

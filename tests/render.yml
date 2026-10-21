@@ -1,0 +1,32 @@
+---
+- name: Render Compose locally without a GPU or Docker daemon
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    ansible_remote_tmp: "{{ playbook_dir }}/../.local/ansible/render-tmp"
+    ansible_python_interpreter: "{{ ansible_playbook_python }}"
+  vars_files:
+    - ../roles/llm/defaults/main.yml
+  tasks:
+    - name: Create local validation output directory
+      ansible.builtin.file:
+        path: "{{ playbook_dir }}/../.cache"
+        state: directory
+        mode: "0755"
+
+    - name: Render Compose using the real Ansible template engine
+      ansible.builtin.template:
+        src: ../roles/llm/templates/compose.yml.j2
+        dest: "{{ playbook_dir }}/../.cache/compose.yml"
+        mode: "0644"
+
+    - name: Render operational systemd units for review
+      ansible.builtin.template:
+        src: "../roles/llm/templates/{{ item }}.j2"
+        dest: "{{ playbook_dir }}/../.cache/{{ item }}"
+        mode: "0644"
+      loop:
+        - gpu-llm-warmup.service
+        - gpu-llm-health.service
+        - gpu-llm-health.timer

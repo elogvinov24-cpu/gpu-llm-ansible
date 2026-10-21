@@ -1,0 +1,47 @@
+name: {{ llm_project_name }}
+services:
+  ollama:
+    image: {{ llm_image | to_json }}
+    restart: unless-stopped
+    init: true
+    stop_grace_period: 60s
+    ports:
+      - "127.0.0.1:{{ llm_port }}:11434"
+    environment:
+      OLLAMA_HOST: "0.0.0.0:11434"
+      OLLAMA_NO_CLOUD: "1"
+      OLLAMA_CONTEXT_LENGTH: {{ llm_context_length | string | to_json }}
+      OLLAMA_NUM_PARALLEL: {{ llm_num_parallel | string | to_json }}
+      OLLAMA_MAX_LOADED_MODELS: "1"
+      OLLAMA_MAX_QUEUE: {{ llm_max_queue | string | to_json }}
+      OLLAMA_KEEP_ALIVE: {{ llm_keep_alive | string | to_json }}
+      NVIDIA_DRIVER_CAPABILITIES: "compute,utility"
+    volumes:
+      - {{ (llm_data_dir ~ ':/root/.ollama') | to_json }}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+{% if llm_gpu_device_ids | length > 0 %}
+              device_ids: {{ llm_gpu_device_ids | to_json }}
+{% else %}
+              count: all
+{% endif %}
+              capabilities: [gpu]
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 512
+    healthcheck:
+      test: ["CMD-SHELL", "OLLAMA_HOST=127.0.0.1:11434 ollama list >/dev/null 2>&1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

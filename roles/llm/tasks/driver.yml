@@ -1,0 +1,167 @@
+---
+- name: Read the current boot identifier
+  ansible.builtin.command:
+    argv: [cat, /proc/sys/kernel/random/boot_id]
+  changed_when: false
+  register: llm_boot_id
+
+- name: Inspect a reboot marker from a previous run
+  ansible.builtin.stat:
+    path: "{{ llm_state_dir }}/reboot-required"
+  register: llm_previous_reboot_marker
+
+- name: Read the boot identifier recorded before driver installation
+  ansible.builtin.slurp:
+    src: "{{ llm_state_dir }}/reboot-required"
+  register: llm_previous_boot_id
+  when: llm_previous_reboot_marker.stat.exists
+
+- name: Clear a reboot requirement already satisfied by a manual reboot
+  ansible.builtin.file:
+    path: "{{ llm_state_dir }}/reboot-required"
+    state: absent
+  when:
+    - llm_previous_reboot_marker.stat.exists
+    - llm_previous_boot_id.content | b64decode | trim != llm_boot_id.stdout | trim
+
+- name: Inspect the running NVIDIA driver
+  ansible.builtin.command:
+    argv: [nvidia-smi, --query-gpu=driver_version, "--format=csv,noheader"]
+  register: llm_driver_before
+  changed_when: false
+  failed_when: false
+
+- name: Decide whether driver installation is required
+  ansible.builtin.set_fact:
+    llm_driver_install_needed: >-
+      {{ llm_driver_before.rc != 0
+         or (llm_driver_before.stdout_lines | default([]) | first | default('0') | trim)
+            is version(llm_nvidia_min_driver, '<')
+         or (llm_nvidia_driver_package != '' and llm_nvidia_driver_package not in ansible_facts.packages) }}
+
+- name: Inspect Secure Boot state
+  ansible.builtin.command:
+    argv: [mokutil, --sb-state]
+  register: llm_secure_boot
+  changed_when: false
+  failed_when: llm_secure_boot.rc not in [0, 1]
+
+- name: Require signed modules or prepared MOK enrollment with Secure Boot
+  ansible.builtin.assert:
+    that:
+      - "'SecureBoot enabled' not in llm_secure_boot.stdout or llm_secure_boot_prepared | bool"
+    fail_msg: >-
+      Secure Boot is enabled. Prepare signed modules/MOK enrollment using the Ubuntu procedure,
+      then set llm_secure_boot_prepared=true, or preinstall a working driver.
+      This playbook cannot complete firmware-console enrollment over SSH.
+  when: llm_driver_install_needed | bool
+
+- name: Install headers for the running kernel
+  ansible.builtin.apt:
+    name: "linux-headers-{{ ansible_facts['kernel'] }}"
+    state: present
+    lock_timeout: 120
+  when: llm_driver_install_needed | bool
+
+- name: Persist the current boot before changing driver packages
+  ansible.builtin.copy:
+    content: "{{ llm_boot_id.stdout | trim }}\n"
+    dest: "{{ llm_state_dir }}/reboot-required"
+    owner: root
+    group: root
+    mode: "0644"
+  when: llm_driver_install_needed | bool
+
+- name: Let Ubuntu select a compute driver for the detected hardware
+  ansible.builtin.command:
+    argv: [ubuntu-drivers, install, --gpgpu]
+  environment:
+    DEBIAN_FRONTEND: noninteractive
+  changed_when: true
+  when:
+    - llm_driver_install_needed | bool
+    - llm_nvidia_driver_package == ''
+
+- name: Install an explicitly selected driver package
+  ansible.builtin.apt:
+    name: "{{ llm_nvidia_driver_package }}"
+    state: present
+    lock_timeout: 120
+  when: llm_nvidia_driver_package != ''
+
+- name: Refresh driver package facts
+  ansible.builtin.package_facts:
+    manager: apt
+  when: llm_driver_install_needed | bool
+
+- name: Find matching utilities for installed NVIDIA driver families
+  ansible.builtin.set_fact:
+    llm_installed_driver_utilities: >-
+      {{ ansible_facts.packages.keys()
+         | select('match', '^nvidia-(driver|headless(-no-dkms)?)-[0-9]+(-server)?(-open)?$')
+         | map('regex_replace', '^nvidia-(driver|headless(-no-dkms)?)-', 'nvidia-utils-')
+         | map('regex_replace', '-open$', '') | unique | list }}
+  when: llm_driver_install_needed | bool
+
+- name: Require an unambiguous installed driver package
+  ansible.builtin.assert:
+    that:
+      - llm_nvidia_driver_package != '' or llm_installed_driver_utilities | length == 1
+    fail_msg: >-
+      Ubuntu did not select one unambiguous driver family. Inspect ubuntu-drivers list --gpgpu
+      and installed packages, then specify llm_nvidia_driver_package for this hardware.
+  when: llm_driver_install_needed | bool
+
+- name: Install matching NVIDIA userspace utilities
+  ansible.builtin.apt:
+    name: >-
+      {{ (llm_nvidia_driver_package | regex_replace('^nvidia-driver-', 'nvidia-utils-') | regex_replace('-open$', ''))
+         if llm_nvidia_driver_package != '' else llm_installed_driver_utilities[0] }}
+    state: present
+    lock_timeout: 120
+  when: llm_driver_install_needed | bool
+
+- name: Check persistent driver reboot marker
+  ansible.builtin.stat:
+    path: "{{ llm_state_dir }}/reboot-required"
+  register: llm_driver_reboot_marker
+
+- name: Check Ubuntu reboot marker
+  ansible.builtin.stat:
+    path: /var/run/reboot-required
+  register: llm_os_reboot_marker
+
+- name: Require a maintenance window when a reboot is pending
+  ansible.builtin.assert:
+    that: llm_allow_reboot | bool
+    fail_msg: >-
+      A reboot is required. Re-run with llm_allow_reboot=true in a maintenance window.
+      A manual reboot is also supported; the recorded boot identifier prevents an unnecessary second reboot.
+  when: llm_driver_reboot_marker.stat.exists or llm_os_reboot_marker.stat.exists
+
+- name: Reboot and wait for SSH to recover
+  ansible.builtin.reboot:
+    reboot_timeout: "{{ llm_reboot_timeout }}"
+    post_reboot_delay: 15
+    test_command: whoami
+  when: llm_driver_reboot_marker.stat.exists or llm_os_reboot_marker.stat.exists
+
+- name: Remove the driver reboot marker after successful reboot
+  ansible.builtin.file:
+    path: "{{ llm_state_dir }}/reboot-required"
+    state: absent
+
+- name: Verify the running driver after installation
+  ansible.builtin.command:
+    argv: [nvidia-smi, --query-gpu=driver_version, "--format=csv,noheader"]
+  register: llm_driver_after
+  changed_when: false
+  retries: 6
+  delay: 10
+  until: llm_driver_after.rc == 0
+
+- name: Enforce the minimum driver version on every GPU
+  ansible.builtin.assert:
+    that: item | trim is version(llm_nvidia_min_driver, '>=')
+    fail_msg: The running driver is too old. Select a compatible newer driver package for this GPU.
+  loop: "{{ llm_driver_after.stdout_lines }}"

@@ -1,0 +1,77 @@
+---
+- name: Download NVIDIA repository signing key
+  ansible.builtin.get_url:
+    url: https://nvidia.github.io/libnvidia-container/gpgkey
+    dest: /etc/apt/keyrings/nvidia-container-toolkit.asc
+    owner: root
+    group: root
+    mode: "0644"
+    timeout: 60
+
+- name: Configure NVIDIA Container Toolkit signed repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+    owner: root
+    group: root
+    mode: "0644"
+    content: >-
+      deb [arch=amd64 signed-by=/etc/apt/keyrings/nvidia-container-toolkit.asc]
+      https://nvidia.github.io/libnvidia-container/stable/deb/amd64 /
+  register: llm_toolkit_repo
+
+- name: Install NVIDIA Container Toolkit packages
+  ansible.builtin.apt:
+    name: >-
+      {{ ['nvidia-container-toolkit', 'nvidia-container-toolkit-base', 'libnvidia-container-tools', 'libnvidia-container1']
+         | map('regex_replace', '$', '=' + llm_container_toolkit_version if llm_container_toolkit_version | length > 0 else '') | list }}
+    state: present
+    update_cache: true
+    cache_valid_time: "{{ 0 if llm_toolkit_repo is changed else 3600 }}"
+    lock_timeout: 120
+  notify: Restart Docker
+  register: llm_toolkit_install
+
+- name: Inspect existing Docker daemon configuration
+  ansible.builtin.stat:
+    path: /etc/docker/daemon.json
+  register: llm_daemon_file
+
+- name: Read existing Docker daemon configuration
+  ansible.builtin.slurp:
+    src: /etc/docker/daemon.json
+  register: llm_daemon_content
+  when: llm_daemon_file.stat.exists
+
+- name: Parse existing Docker configuration without replacing unrelated settings
+  ansible.builtin.set_fact:
+    llm_daemon_config: >-
+      {{ (llm_daemon_content.content | b64decode | from_json) if llm_daemon_file.stat.exists else {} }}
+
+- name: Read currently active Docker runtimes
+  ansible.builtin.command:
+    argv: [docker, info, --format, '{{ "{{json .Runtimes}}" }}']
+  changed_when: false
+  register: llm_active_runtimes
+
+- name: Register NVIDIA runtime in Docker
+  ansible.builtin.command:
+    argv: [nvidia-ctk, runtime, configure, --runtime=docker]
+  when: >-
+    not llm_daemon_config.get('runtimes', {}).get('nvidia', {}).get('path', '').endswith('nvidia-container-runtime')
+    or 'nvidia' not in (llm_active_runtimes.stdout | from_json)
+  changed_when: true
+  notify: Restart Docker
+  register: llm_runtime_registration
+
+- name: Apply runtime changes before creating GPU containers
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify Docker has registered the NVIDIA runtime
+  ansible.builtin.command:
+    argv: [docker, info, --format, '{{ "{{json .Runtimes}}" }}']
+  changed_when: false
+  register: llm_docker_runtimes
+
+- name: Require the NVIDIA runtime
+  ansible.builtin.assert:
+    that: "'nvidia' in (llm_docker_runtimes.stdout | from_json)"

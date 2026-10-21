@@ -1,0 +1,10 @@
+---
+- name: Verify a previously deployed LLM without reinstalling it
+  hosts: gpu_servers
+  become: true
+  gather_facts: false
+  tasks:
+    - name: Run host, container, inference and VRAM checks
+      ansible.builtin.include_role:
+        name: llm
+        tasks_from: verify

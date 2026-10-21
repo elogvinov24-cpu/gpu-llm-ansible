@@ -1,0 +1,115 @@
+---
+- name: Require a supported Ubuntu server
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_version'] in ['22.04', '24.04']
+      - ansible_facts['architecture'] == 'x86_64'
+      - ansible_facts['service_mgr'] == 'systemd'
+    fail_msg: This project targets Ubuntu Server 22.04/24.04 amd64 with systemd and a PCI NVIDIA GPU.
+
+- name: Validate deployment settings
+  ansible.builtin.assert:
+    that:
+      - llm_port | int > 1024 and llm_port | int < 65536
+      - llm_context_length | int > 0
+      - llm_num_parallel | int > 0
+      - llm_max_queue | int > 0
+      - llm_model_pull_timeout | int > 0
+      - llm_inference_timeout | int > 0
+      - llm_health_interval_seconds | int >= 30
+      - llm_boot_ready_timeout | int > 0
+      - llm_min_memory_mb | int >= 0
+      - llm_min_free_disk_gib | int >= 0
+      - llm_project_name is match('^[a-z0-9][a-z0-9_-]*$')
+      - llm_model is match('^[a-zA-Z0-9][a-zA-Z0-9._/-]*:[a-zA-Z0-9_.-]+$')
+      - "':' in llm_image or '@sha256:' in llm_image"
+      - not llm_image.endswith(':latest')
+      - llm_nvidia_driver_package == '' or llm_nvidia_driver_package is match('^nvidia-driver-[0-9]+(-server)?(-open)?$')
+      - llm_model_expected_digest == '' or llm_model_expected_digest is match('^[a-f0-9]{64}$')
+      - llm_gpu_device_ids | type_debug == 'list'
+      - llm_data_dir is match('^/[a-zA-Z0-9_/-]+$') and llm_data_dir != '/'
+      - llm_install_dir is match('^/[a-zA-Z0-9_/-]+$') and llm_install_dir != '/'
+      - llm_state_dir is match('^/[a-zA-Z0-9_/-]+$') and llm_state_dir != '/'
+    fail_msg: Check the variables, explicit image/model tags, absolute paths and port.
+
+- name: Explain check-mode limitation before package-dependent tasks
+  ansible.builtin.debug:
+    msg: Check mode validates settings only. Use syntax-check and tests locally, then deploy to a staging GPU host.
+  when: ansible_check_mode
+
+- name: End this host in check mode
+  ansible.builtin.meta: end_host
+  when: ansible_check_mode
+
+- name: Check available host memory
+  ansible.builtin.assert:
+    that: ansible_facts['memtotal_mb'] | int >= llm_min_memory_mb | int
+    fail_msg: Insufficient host RAM. Choose a larger server or explicitly lower llm_min_memory_mb for a smaller model.
+
+- name: Inspect free disk space on the model filesystem
+  ansible.builtin.command:
+    argv:
+      - /usr/bin/python3
+      - -c
+      - |
+        import os, sys
+        path = sys.argv[1]
+        while not os.path.exists(path):
+            path = os.path.dirname(path)
+        fs = os.statvfs(path)
+        print(fs.f_bavail * fs.f_frsize)
+      - "{{ llm_data_dir }}"
+  changed_when: false
+  register: llm_free_disk
+
+- name: Require free space for images and model download
+  ansible.builtin.assert:
+    that: llm_free_disk.stdout | int >= (llm_min_free_disk_gib | int) * 1024 * 1024 * 1024
+    fail_msg: Insufficient free disk space on the model filesystem. Free space or select another llm_data_dir.
+
+- name: Install prerequisite Ubuntu packages
+  ansible.builtin.apt:
+    name:
+      - ca-certificates
+      - curl
+      - gnupg
+      - pciutils
+      - mokutil
+      - ubuntu-drivers-common
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+    lock_timeout: 120
+
+- name: Identify PCI display and compute devices
+  ansible.builtin.command:
+    argv: [lspci, -Dn]
+  register: llm_pci_devices
+  changed_when: false
+
+- name: Require an NVIDIA GPU before configuring drivers
+  ansible.builtin.assert:
+    that:
+      - llm_pci_devices.stdout is search('(?m)^\S+\s+03[0-9a-f]{2}:\s+10de:')
+    fail_msg: No NVIDIA PCI display/compute device found. Check passthrough or use the documented GPU-free static checks.
+
+- name: Read installed packages
+  ansible.builtin.package_facts:
+    manager: apt
+
+- name: Refuse to remove conflicting container runtimes automatically
+  ansible.builtin.assert:
+    that:
+      - >-
+        ['docker.io', 'docker-compose', 'docker-compose-v2', 'docker-doc', 'docker-buildx',
+         'podman-docker', 'containerd', 'runc'] | intersect(ansible_facts.packages.keys() | list) | length == 0
+    fail_msg: Conflicting distro Docker/containerd packages found. Migrate existing workloads before installing Docker CE.
+
+- name: Create the deployment state directory
+  ansible.builtin.file:
+    path: "{{ llm_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"

@@ -1,0 +1,23 @@
+[Unit]
+Description=Check the LLM API and NVIDIA GPU and write local health metrics
+After=docker.service
+ConditionPathExists={{ llm_install_dir }}/compose.yml
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gpu-llm-health --config {{ llm_install_dir }}/probe.json
+TimeoutStartSec=120
+User=root
+Environment=DOCKER_CONFIG=/run/gpu-llm-health
+RuntimeDirectory=gpu-llm-health
+UMask=0022
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths={{ llm_state_dir }}
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

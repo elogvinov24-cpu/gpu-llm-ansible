@@ -1,0 +1,51 @@
+---
+- name: Configure NVIDIA GPU servers and deploy an LLM API
+  hosts: gpu_servers
+  become: true
+  gather_facts: false
+  serial: 1
+  any_errors_fatal: true
+  pre_tasks:
+    - name: Wait for SSH and remote Python to become available
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+        sleep: 5
+      when: not ansible_check_mode
+
+    - name: Gather host facts after the connection is ready
+      ansible.builtin.setup:
+
+    - name: Wait for initial cloud provisioning to finish when present
+      ansible.builtin.shell: |
+        if command -v cloud-init >/dev/null 2>&1; then
+          timeout 600 cloud-init status --wait --format json
+        else
+          printf '%s\n' '{"status":"disabled","errors":[],"recoverable_errors":{}}'
+        fi
+      args:
+        executable: /bin/sh
+      register: llm_cloud_init
+      changed_when: false
+      failed_when: llm_cloud_init.rc not in [0, 2]
+      when: not ansible_check_mode
+
+    - name: Require completed cloud provisioning without errors
+      ansible.builtin.assert:
+        that:
+          - llm_cloud_status.status in ['done', 'disabled']
+          - llm_cloud_status.errors | default([]) | length == 0
+          - llm_cloud_status.recoverable_errors.ERROR | default([]) | length == 0
+          - llm_cloud_status.recoverable_errors.CRITICAL | default([]) | length == 0
+        fail_msg: Cloud-init reported errors. Inspect cloud-init status --long before deploying.
+      vars:
+        llm_cloud_status: "{{ llm_cloud_init.stdout | from_json }}"
+      when: not ansible_check_mode
+
+    - name: Report recoverable cloud image warnings
+      ansible.builtin.debug:
+        msg: "{{ (llm_cloud_init.stdout | from_json).recoverable_errors | default({}) }}"
+      when:
+        - not ansible_check_mode
+        - llm_cloud_init.rc == 2
+  roles:
+    - role: llm
